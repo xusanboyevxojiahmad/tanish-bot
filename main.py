@@ -1,11 +1,13 @@
+import os  # Bu kutubxona o'zgaruvchilarni o'qish uchun kerak
 import telebot
 from telebot import types
 import sqlite3
 import time
 
 # --- SOZLAMALAR ---
-API_TOKEN = '7654321098:ABCdefGHIjklMNOpqrsTUVwxYZ' # @BotFather bergan tokenni yozing
-ADMIN_ID = 8329231121 # Sizning ID raqamingiz asosiy admin sifatida kiritildi
+# Tokenni Render "Variables" bo'limidan oladi
+API_TOKEN = os.getenv('BOT_TOKEN') 
+ADMIN_ID = 8329231121 # Sizning ID raqamingiz
 
 bot = telebot.TeleBot(API_TOKEN)
 
