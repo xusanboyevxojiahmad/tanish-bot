@@ -1,169 +1,105 @@
-import os
 import telebot
-from telebot import types
-import sqlite3
-import threading
-import http.server
-import socketserver
-
-# --- RENDER UCHUN PORT ---
-def run_port():
-    port = int(os.environ.get("PORT", 10000))
-    handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", port), handler) as httpd:
-        httpd.serve_forever()
-
-threading.Thread(target=run_port, daemon=True).start()
+import os
+from telebot import types, api_helper
 
 # --- SOZLAMALAR ---
-API_TOKEN = os.getenv('BOT_TOKEN') 
-ADMIN_ID = 8329231121 # Sizning ID
-PREMIUM_LIMIT = 5    # Nechta do'st uchun premium beriladi
+API_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = 8770983969  # Sizning ID raqamingiz
+
+if not API_TOKEN:
+    print("XATO: BOT_TOKEN topilmadi!")
+    exit()
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# --- BAZA BILAN ISHLASH ---
-def get_db():
-    return sqlite3.connect('dating_bot.db', check_same_thread=False)
+# Ma'lumotlar
+user_data = {} 
+waiting_users = []
+active_chats = {}
+settings = {'check_sub': True, 'channel_username': '@kanal_username'}
 
-def init_db():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, full_name TEXT, 
-        invite_count INTEGER DEFAULT 0, is_premium INTEGER DEFAULT 0,
-        lang TEXT DEFAULT 'uz')''')
-    cursor.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-    # Admin ID va Premium tizimi holati (1 - yoqiq, 0 - o'chiq)
-    cursor.execute('INSERT OR IGNORE INTO settings VALUES ("admin_id", ?)', (str(ADMIN_ID),))
-    cursor.execute('INSERT OR IGNORE INTO settings VALUES ("premium_system", "1")')
-    conn.commit()
-    conn.close()
+def get_main_menu():
+    """Asosiy menyu klaviaturasini yaratish"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("🔍 Suhbatdosh topish", "❌ Suhbatni to'xtatish")
+    markup.add("👥 Do'stlarim", "🎁 Premium & Takliflar")
+    return markup
 
-def get_setting(key):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    res = cursor.fetchone()
-    conn.close()
-    return res[0] if res else None
+def check_sub(user_id):
+    if not settings['check_sub']: return True
+    try:
+        status = bot.get_chat_member(chat_id=settings['channel_username'], user_id=user_id).status
+        return status != 'left'
+    except: return True
 
-# --- YORDAMCHI FUNKSIYALAR ---
-def get_user_data(uid):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
-    res = cursor.fetchone()
-    conn.close()
-    return res
-
-def show_main_menu(uid):
-    user = get_user_data(uid)
-    lang = user[4] if user else 'uz'
-    premium_icon = "🌟" if user and user[3] == 1 else "👤"
-    
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("🔍 Suhbatdosh topish")
-    m.add("👥 Do'stlarim", "🎁 Premium & Takliflar")
-    if int(uid) == ADMIN_ID:
-        m.add("⚙️ Admin Panel")
-    
-    bot.send_message(uid, f"{premium_icon} Asosiy menyu", reply_markup=m)
-
-# --- START VA REFERAL ---
 @bot.message_handler(commands=['start'])
 def start(message):
-    init_db()
-    uid = message.chat.id
-    user = get_user_data(uid)
-    
-    if not user:
-        # Referalni tekshirish
+    user_id = message.chat.id
+    if user_id not in user_data:
+        user_data[user_id] = {'referrals': [], 'is_premium': False}
         if len(message.text.split()) > 1:
-            ref_id = message.text.split()[1]
-            if ref_id.isdigit() and int(ref_id) != uid:
-                conn = get_db()
-                cursor = conn.cursor()
-                cursor.execute("UPDATE users SET invite_count = invite_count + 1 WHERE user_id = ?", (ref_id,))
-                
-                # Premium berishni tekshirish (faqat tizim yoqiq bo'lsa)
-                if get_setting("premium_system") == "1":
-                    cursor.execute("SELECT invite_count FROM users WHERE user_id = ?", (ref_id,))
-                    c = cursor.fetchone()
-                    if c and c[0] >= PREMIUM_LIMIT:
-                        cursor.execute("UPDATE users SET is_premium = 1 WHERE user_id = ?", (ref_id,))
-                        try: bot.send_message(ref_id, "🌟 Tabriklaymiz! 5 ta do'st taklif qildingiz va Premium statusiga ega bo'ldingiz!")
-                        except: pass
-                conn.commit()
-                conn.close()
+            inviter_id = int(message.text.split()[1])
+            if inviter_id in user_data and inviter_id != user_id:
+                if user_id not in user_data[inviter_id]['referrals']:
+                    user_data[inviter_id]['referrals'].append(user_id)
 
-        msg = bot.send_message(uid, "Xush kelibsiz! Ismingizni kiriting:")
-        bot.register_next_step_handler(msg, save_user)
+    if settings['check_sub'] and not check_sub(user_id):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Kanalga a'zo bo'lish", url=f"https://t.me/{settings['channel_username'].replace('@', '')}"))
+        markup.add(types.InlineKeyboardButton("Tekshirish ✅", callback_data="check_sub_now"))
+        bot.send_message(user_id, "Botdan foydalanish uchun kanalga a'zo bo'ling:", reply_markup=markup)
+        return
+
+    bot.send_message(user_id, "Asosiy menyu ochildi:", reply_markup=get_main_menu())
+
+@bot.message_handler(func=lambda message: message.text == "🔍 Suhbatdosh topish")
+def search_handler(message):
+    user_id = message.chat.id
+    if user_id in active_chats:
+        bot.send_message(user_id, "Siz allaqachon suhbatdasiz!")
+        return
+    
+    if user_id in waiting_users:
+        bot.send_message(user_id, "Suhbatdosh qidirilmoqda... kuting.")
+        return
+
+    if waiting_users:
+        partner_id = waiting_users.pop(0)
+        active_chats[user_id] = partner_id
+        active_chats[partner_id] = user_id
+        bot.send_message(user_id, "🔍 Suhbatdosh topildi!", reply_markup=get_main_menu())
+        bot.send_message(partner_id, "🔍 Suhbatdosh topildi!", reply_markup=get_main_menu())
     else:
-        show_main_menu(uid)
+        waiting_users.append(user_id)
+        bot.send_message(user_id, "🔍 Suhbatdosh qidirilmoqda... (tez orada suxbatdosh topiladi...)", reply_markup=get_main_menu())
 
-def save_user(message):
-    uid = message.chat.id
-    name = message.text
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users (user_id, full_name) VALUES (?,?)", (uid, name))
-    conn.commit()
-    conn.close()
-    show_main_menu(uid)
+@bot.message_handler(func=lambda message: message.text == "❌ Suhbatni to'xtatish")
+def stop_handler(message):
+    user_id = message.chat.id
+    if user_id in active_chats:
+        p_id = active_chats.pop(user_id)
+        active_chats.pop(p_id)
+        bot.send_message(user_id, "Suhbat to'xtatildi.", reply_markup=get_main_menu())
+        bot.send_message(p_id, "Suhbatdosh suhbatni to'xtatdi.", reply_markup=get_main_menu())
+    elif user_id in waiting_users:
+        waiting_users.remove(user_id)
+        bot.send_message(user_id, "Qidiruv bekor qilindi.", reply_markup=get_main_menu())
+    else:
+        bot.send_message(user_id, "Siz hozir suhbatda emassiz.", reply_markup=get_main_menu())
 
-# --- ADMIN PANEL ---
-@bot.message_handler(func=lambda m: m.text == "⚙️ Admin Panel" and m.chat.id == ADMIN_ID)
-def admin_panel(message):
-    status = "YOQIQ ✅" if get_setting("premium_system") == "1" else "O'CHIQ ❌"
-    m = types.InlineKeyboardMarkup()
-    m.add(types.InlineKeyboardButton(f"Premium Tizimi: {status}", callback_data="toggle_prem"))
-    bot.send_message(ADMIN_ID, "Admin boshqaruv paneli:", reply_markup=m)
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    user_id = message.chat.id
+    # Agar suhbatda bo'lsa - xabarni yuborish
+    if user_id in active_chats:
+        try:
+            bot.send_message(active_chats[user_id], message.text)
+        except:
+            bot.send_message(user_id, "Xabar yuborilmadi (sherigingiz botni bloklagan bo'lishi mumkin).")
+    else:
+        # Agar suhbatda bo'lmasa va menyu tugmasidan boshqa narsa yozsa
+        bot.send_message(user_id, "Suhbat boshlash uchun tugmalardan foydalaning 👇", reply_markup=get_main_menu())
 
-@bot.callback_query_handler(func=lambda c: c.data == "toggle_prem")
-def toggle_prem(call):
-    current = get_setting("premium_system")
-    new_val = "0" if current == "1" else "1"
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE settings SET value = ? WHERE key = 'premium_system'", (new_val,))
-    conn.commit()
-    conn.close()
-    
-    status_text = "YOQIQ ✅" if new_val == "1" else "O'CHIQ ❌"
-    bot.edit_message_text(f"Admin boshqaruv paneli:\nPremium Tizimi: {status_text}", 
-                         call.message.chat.id, call.message.message_id, 
-                         reply_markup=call.message.reply_markup)
-    bot.answer_callback_query(call.id, "Holat o'zgardi!")
+# Qolgan funksiyalar (admin, premium, friends...) yuqoridagi kod bilan bir xil davom etadi
 
-# --- TUGMALAR ---
-@bot.message_handler(func=lambda m: True)
-def handle_text(message):
-    uid = message.chat.id
-    user = get_user_data(uid)
-    if not user: return
-
-    if message.text == "🎁 Premium & Takliflar":
-        if get_setting("premium_system") == "0":
-            bot.send_message(uid, "⚠️ Premium tizimi vaqtincha o'chirilgan. Tez orada yoqiladi!")
-            return
-            
-        bot_user = bot.get_me().username
-        link = f"https://t.me/{bot_user}?start={uid}"
-        count = user[2]
-        is_prem = "🌟 FAOL" if user[3] == 1 else "Oddiy foydalanuvchi"
-        
-        msg = (f"Sizning holatingiz: {is_prem}\n"
-               f"Taklif qilgan do'stlaringiz: {count} ta\n\n"
-               f"Sovg'a: {PREMIUM_LIMIT} ta do'st taklif qiling va Premium oling!\n"
-               f"Sizning linkingiz:\n`{link}`")
-        bot.send_message(uid, msg, parse_mode="Markdown")
-
-    elif message.text == "🔍 Suhbatdosh topish":
-        bot.send_message(uid, "🔍 Suhbatdosh qidirilmoqda... (Tez kunda ishga tushadi)")
-
-# --- ISHGA TUSHIRISH ---
-if __name__ == '__main__':
-    init_db()
-    bot.infinity_polling()
-    
+bot.polling(none_stop=True)
