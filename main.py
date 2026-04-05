@@ -15,17 +15,17 @@ def home():
     return "Bot holati: 24/7 ishlayapti ✅"
 
 def ping_self():
-    """Render serverini uyquga ketmasligi uchun o'zini ping qiladi"""
+    """Render serverini uyquga ketmasligi uchun ping qiladi"""
     try:
         url = os.environ.get("SELF_URL", "https://tanish-bot.onrender.com")
         requests.get(url, timeout=5)
-        print("Ping: Bot serveri uyg'otildi.")
+        print("Ping: Bot serveri uyg'otildi ✅")
     except Exception as e:
         print(f"Ping xatosi: {e}")
 
-# Har 14 daqiqada ping
+# Har 90 soniyada ping qilish (1.5 minut)
 scheduler = BackgroundScheduler()
-scheduler.add_job(func=ping_self, trigger="interval", minutes=14)
+scheduler.add_job(func=ping_self, trigger="interval", seconds=90)
 scheduler.start()
 
 def run():
@@ -132,7 +132,7 @@ def send_broadcast(message):
         except: continue
     bot.send_message(ADMIN_ID, "📢 Reklama yuborildi.")
 
-# -------------------- 6. SUHBAT LOGIKASI --------------------
+# -------------------- 6. SUHBAT LOGIKASI (1-ga-1) --------------------
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = message.chat.id
@@ -175,7 +175,7 @@ def find_menu(message):
     bot.send_message(uid, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
 
 def search_partner(uid, mode, msg_id):
-    if uid in waiting_users: return
+    if uid in waiting_users or uid in active_chats: return
     found = False
     for partner_id in waiting_users:
         p_gender = user_data[partner_id]['gender']
@@ -219,4 +219,4 @@ if __name__=="__main__":
             bot.infinity_polling(none_stop=True, timeout=60, long_polling_timeout=5)
         except Exception as e:
             print(f"Xato yuz berdi: {e} | 2 soniyadan keyin qayta ishga tushadi")
-            time.sleep(2)  # xato yuz bersa 2 soniyadan keyin qayta ishga tushadi
+            time.sleep(2)
