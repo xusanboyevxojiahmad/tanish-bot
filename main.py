@@ -23,7 +23,6 @@ def ping_self():
     except Exception as e:
         print(f"Ping xatosi: {e}")
 
-# Har 90 soniyada ping qilish (1.5 minut)
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=ping_self, trigger="interval", seconds=90)
 scheduler.start()
@@ -39,7 +38,7 @@ def keep_alive():
 
 # -------------------- 2. TELEBOT CONFIG --------------------
 API_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', 8770983969))
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 8770983969))  # Sizning ID default
 
 if not API_TOKEN:
     raise ValueError("❌ BOT_TOKEN topilmadi!")
@@ -172,7 +171,8 @@ def find_menu(message):
     markup.add(types.InlineKeyboardButton("Ayol 👩", callback_data="find_female"),
                types.InlineKeyboardButton("Erkak 👨", callback_data="find_male"))
     markup.add(types.InlineKeyboardButton("Tasodifiy 🎲", callback_data="find_random"))
-    bot.send_message(uid, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
+    msg = bot.send_message(uid, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
+    bot.register_next_step_handler(msg, lambda m: search_partner(uid, "random", msg.message_id))
 
 def search_partner(uid, mode, msg_id):
     if uid in waiting_users or uid in active_chats: return
@@ -186,7 +186,8 @@ def search_partner(uid, mode, msg_id):
             bot.edit_message_text("🔍 Suhbatdosh topildi!", chat_id=uid, message_id=msg_id)
             bot.send_message(uid, f"Sherik jinsi: {p_gender if user_data[uid]['is_premium'] else '🔒 Faqat Premium'}")
             bot.send_message(partner_id, f"Sherik jinsi: {user_data[uid]['gender'] if user_data[partner_id]['is_premium'] else '🔒 Faqat Premium'}")
-            found=True; break
+            found=True
+            break
     if not found:
         waiting_users.append(uid)
         bot.edit_message_text("🔍 Suhbatdosh qidirilmoqda...", chat_id=uid, message_id=msg_id)
