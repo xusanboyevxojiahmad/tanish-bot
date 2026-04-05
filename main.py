@@ -4,7 +4,7 @@ from telebot import types
 from flask import Flask
 from threading import Thread
 
-# --- 1. RENDER UCHUN FLASK ---
+# --- 1. RENDER UCHUN FLASK (Botni uyg'oq tutish) ---
 app = Flask('')
 
 @app.route('/')
@@ -22,7 +22,7 @@ def keep_alive():
 
 # --- 2. SOZLAMALAR ---
 API_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = 8770983969 
+ADMIN_ID = 8770983969  # Sizning ID raqamingiz
 
 if not API_TOKEN:
     print("XATO: BOT_TOKEN topilmadi!")
@@ -30,16 +30,18 @@ if not API_TOKEN:
 
 bot = telebot.TeleBot(API_TOKEN)
 
+# Dinamik sozlamalar lug'ati
 config = {
     'check_sub': True,
     'show_stats': True,
-    'channel_username': '@kanal_username', 
+    'channel_username': '@kanal_username', # Buni admin panelda o'zgartira olasiz
     'required_referrals': 3
 }
 
+# Ma'lumotlar ombori (Vaqtinchalik)
 user_data = {} 
-waiting_users = []
-active_chats = {}
+waiting_users = [] # [user_id, user_id, ...]
+active_chats = {}  # {user_id: partner_id}
 
 # --- 3. YORDAMCHI FUNKSIYALAR ---
 def get_main_menu(user_id):
@@ -57,25 +59,32 @@ def check_sub(user_id):
         return status != 'left'
     except: return True
 
-# --- 4. ADMIN PANEL ---
+# --- 4. ADMIN PANEL VA SOZLAMALAR ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Menyu" and message.from_user.id == ADMIN_ID)
 def admin_panel(message):
-    sub_btn = "Obuna: ✅ YOQIQ" if config['check_sub'] else "Obuna: ❌ O'CHIQ"
-    stats_btn = "Statistika: ✅ YOQIQ" if config['show_stats'] else "Statistika: ❌ O'CHIQ"
+    sub_status = "✅ YOQIQ" if config['check_sub'] else "❌ O'CHIQ"
+    stats_status = "✅ YOQIQ" if config['show_stats'] else "❌ O'CHIQ"
     
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(sub_btn, callback_data="toggle_sub"))
-    markup.add(types.InlineKeyboardButton(stats_btn, callback_data="toggle_stats"))
-    markup.add(types.InlineKeyboardButton(f"Premium limiti: {config['required_referrals']}", callback_data="change_limit"))
-    markup.add(types.InlineKeyboardButton("📢 Reklama yuborish", callback_data="broadcast"))
+    markup.add(types.InlineKeyboardButton(f"Obuna: {sub_status}", callback_data="toggle_sub"),
+               types.InlineKeyboardButton(f"Statistika: {stats_status}", callback_data="toggle_stats"))
+    
+    markup.add(types.InlineKeyboardButton(f"📢 Kanal: {config['channel_username']}", callback_data="set_channel"))
+    markup.add(types.InlineKeyboardButton(f"💎 Premium limiti: {config['required_referrals']}", callback_data="change_limit"))
+    
+    markup.add(types.InlineKeyboardButton("🚀 Reklama yuborish", callback_data="broadcast"))
     markup.add(types.InlineKeyboardButton("🔑 Egalikni o'tkazish", callback_data="transfer"))
     
-    text = "⚙️ <b>Admin boshqaruv paneli</b>"
+    text = (f"⚙️ <b>Admin boshqaruv paneli</b>\n\n"
+            f"📊 Jami foydalanuvchilar: {len(user_data)}\n"
+            f"📢 Kanal: {config['channel_username']}")
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.message.chat.id
+    
+    # --- ADMIN CALLBACKS ---
     if user_id == ADMIN_ID:
         if call.data == "toggle_sub":
             config['check_sub'] = not config['check_sub']
@@ -85,59 +94,85 @@ def callback_handler(call):
             config['show_stats'] = not config['show_stats']
             bot.delete_message(user_id, call.message.message_id)
             admin_panel(call.message)
-        elif call.data == "broadcast":
-            msg = bot.send_message(user_id, "Xabar yozing:")
-            bot.register_next_step_handler(msg, send_broadcast)
+        elif call.data == "set_channel":
+            msg = bot.send_message(user_id, "Yangi kanal @username yuboring:")
+            bot.register_next_step_handler(msg, update_channel)
         elif call.data == "change_limit":
-            msg = bot.send_message(user_id, "Yangi limit:")
+            msg = bot.send_message(user_id, "Yangi limitni (raqam) yuboring:")
             bot.register_next_step_handler(msg, update_limit)
+        elif call.data == "broadcast":
+            msg = bot.send_message(user_id, "Reklama xabarini yozing:")
+            bot.register_next_step_handler(msg, send_broadcast)
         elif call.data == "transfer":
-            msg = bot.send_message(user_id, "Yangi admin ID:")
+            msg = bot.send_message(user_id, "Yangi admin ID yuboring:")
             bot.register_next_step_handler(msg, process_transfer)
 
+    # --- JINS TANLASH ---
     if call.data.startswith("set_"):
         gender = "Erkak" if call.data == "set_male" else "Ayol"
         user_data[user_id]['gender'] = gender
-        bot.edit_message_text(f"Jinsi: {gender} ✅", chat_id=user_id, message_id=call.message.message_id)
-        bot.send_message(user_id, "Tayyor!", reply_markup=get_main_menu(user_id))
+        bot.edit_message_text(f"Sizning jinsingiz: {gender} ✅", chat_id=user_id, message_id=call.message.message_id)
+        bot.send_message(user_id, "Tayyor! Endi suhbatdosh qidirishingiz mumkin.", reply_markup=get_main_menu(user_id))
 
-def send_broadcast(message):
-    for uid in user_data:
-        try: bot.send_message(uid, message.text)
-        except: continue
-    bot.send_message(ADMIN_ID, "Yuborildi.")
+    # --- QIDIRUV REJIMI TANLASH ---
+    elif call.data.startswith("find_"):
+        if user_id in active_chats: return
+        mode = call.data.split("_")[1] # female, male, random
+        search_partner(user_id, mode, call.message.message_id)
+
+# --- 5. ADMIN STEP HANDLERLARI ---
+def update_channel(message):
+    if message.text.startswith("@"):
+        config['channel_username'] = message.text.strip()
+        bot.send_message(ADMIN_ID, f"✅ Kanal o'zgartirildi: {config['channel_username']}")
+    else: bot.send_message(ADMIN_ID, "❌ Xato. @username ko'rinishida yozing.")
+    admin_panel(message)
 
 def update_limit(message):
-    try: config['required_referrals'] = int(message.text)
-    except: pass
-    bot.send_message(ADMIN_ID, "Saqlandi.")
+    try:
+        config['required_referrals'] = int(message.text)
+        bot.send_message(ADMIN_ID, f"✅ Yangi limit: {message.text}")
+    except: bot.send_message(ADMIN_ID, "❌ Faqat raqam kiriting.")
+    admin_panel(message)
+
+def send_broadcast(message):
+    count = 0
+    for uid in user_data:
+        try:
+            bot.send_message(uid, message.text)
+            count += 1
+        except: continue
+    bot.send_message(ADMIN_ID, f"📢 {count} kishiga yuborildi.")
 
 def process_transfer(message):
     global ADMIN_ID
-    try: ADMIN_ID = int(message.text)
-    except: pass
-    bot.send_message(message.chat.id, "O'tkazildi.")
+    try:
+        ADMIN_ID = int(message.text)
+        bot.send_message(message.chat.id, f"✅ Egalik {ADMIN_ID} ga o'tkazildi.")
+    except: bot.send_message(message.chat.id, "❌ Xato ID.")
 
-# --- 5. ASOSIY LOGIKA (QIDIRUV VA PREMIUM) ---
+# --- 6. ASOSIY LOGIKA ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.chat.id
     if user_id not in user_data:
         user_data[user_id] = {'gender': None, 'referrals': [], 'is_premium': False}
+        # Referal tekshirish
         args = message.text.split()
         if len(args) > 1:
             try:
                 inviter = int(args[1])
-                if inviter in user_data and user_id not in user_data[inviter]['referrals']:
+                if inviter in user_data and user_id not in user_data[inviter]['referrals'] and inviter != user_id:
                     user_data[inviter]['referrals'].append(user_id)
                     if len(user_data[inviter]['referrals']) >= config['required_referrals']:
                         user_data[inviter]['is_premium'] = True
+                        bot.send_message(inviter, "🎁 Tabriklaymiz! Sizga PREMIUM statusi berildi!")
             except: pass
 
     if config['check_sub'] and not check_sub(user_id):
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("A'zo bo'lish", url=f"https://t.me/{config['channel_username'].replace('@', '')}"))
-        bot.send_message(user_id, "⚠️ Kanalga a'zo bo'ling!", reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("Kanalga a'zo bo'lish", url=f"https://t.me/{config['channel_username'].replace('@', '')}"))
+        bot.send_message(user_id, "⚠️ Botdan foydalanish uchun kanalga a'zo bo'ling!", reply_markup=markup)
         return
 
     if user_data[user_id]['gender'] is None:
@@ -150,33 +185,48 @@ def start(message):
     bot.send_message(user_id, "Xush kelibsiz!", reply_markup=get_main_menu(user_id))
 
 @bot.message_handler(func=lambda message: message.text == "🔍 Suhbatdosh topish")
-def search(message):
+def find_menu(message):
     user_id = message.chat.id
     if user_id in active_chats:
-        bot.send_message(user_id, "Siz suhbatdasiz!")
+        bot.send_message(user_id, "Siz allaqachon suhbatdasiz!")
         return
-    if user_id in waiting_users:
-        bot.send_message(user_id, "🔍 Qidirilmoqda...")
-        return
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Ayol 👩", callback_data="find_female"),
+               types.InlineKeyboardButton("Erkak 👨", callback_data="find_male"))
+    markup.add(types.InlineKeyboardButton("Tasodifiy 🎲", callback_data="find_random"))
+    bot.send_message(user_id, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
 
-    if waiting_users:
-        p_id = waiting_users.pop(0)
-        active_chats[user_id], active_chats[p_id] = p_id, user_id
+def search_partner(user_id, mode, msg_id):
+    if user_id in waiting_users: return
+
+    found = False
+    for partner_id in waiting_users:
+        p_gender = user_data[partner_id]['gender']
         
-        # Jinsni ko'rsatish mantiqi:
-        u_gender = user_data[user_id]['gender']
-        p_gender = user_data[p_id]['gender']
+        # Tanlovga moslikni tekshirish
+        match = False
+        if mode == "random": match = True
+        elif mode == "female" and p_gender == "Ayol": match = True
+        elif mode == "male" and p_gender == "Erkak": match = True
         
-        # Foydalanuvchi premium bo'lsa sherigining jinsini ko'radi, aks holda yo'q
-        u_msg = f"🔍 Suhbatdosh topildi!\n👫 Sherik jinsi: {p_gender if user_data[user_id]['is_premium'] else '🔒 Faqat Premium uchun'}"
-        p_msg = f"🔍 Suhbatdosh topildi!\n👫 Sherik jinsi: {u_gender if user_data[p_id]['is_premium'] else '🔒 Faqat Premium uchun'}"
-        
-        bot.send_message(user_id, u_msg, reply_markup=get_main_menu(user_id))
-        bot.send_message(p_id, p_msg, reply_markup=get_main_menu(p_id))
-    else:
-        if user_data[user_id].get('is_premium'): waiting_users.insert(0, user_id)
-        else: waiting_users.append(user_id)
-        bot.send_message(user_id, "🔍 Qidirilmoqda...")
+        if match:
+            waiting_users.remove(partner_id)
+            active_chats[user_id], active_chats[partner_id] = partner_id, user_id
+            
+            # Premium maxfiylik: Jinsni faqat premium ko'radi
+            u_p_gen = user_data[partner_id]['gender'] if user_data[user_id]['is_premium'] else '🔒 Faqat Premium uchun'
+            p_u_gen = user_data[user_id]['gender'] if user_data[partner_id]['is_premium'] else '🔒 Faqat Premium uchun'
+            
+            bot.edit_message_text("🔍 Suhbatdosh topildi!", chat_id=user_id, message_id=msg_id)
+            bot.send_message(user_id, f"Suhbatni boshlashingiz mumkin.\n👫 Sherik jinsi: {u_p_gen}")
+            bot.send_message(partner_id, f"🔍 Suhbatdosh topildi!\n👫 Sherik jinsi: {p_u_gen}")
+            found = True
+            break
+            
+    if not found:
+        waiting_users.append(user_id)
+        bot.edit_message_text("🔍 Suhbatdosh qidirilmoqda... kuting.", chat_id=user_id, message_id=msg_id)
 
 @bot.message_handler(func=lambda message: message.text == "👤 Profilim")
 def profile(message):
@@ -184,6 +234,7 @@ def profile(message):
     data = user_data.get(uid, {})
     stats_text = f"\n📊 Bot a'zolari: {len(user_data)}" if config['show_stats'] else ""
     status = "Premium ✨" if data.get('is_premium') else "Oddiy"
+    
     text = (f"👤 <b>Profilingiz:</b>\n\n🆔 ID: <code>{uid}</code>\n"
             f"👫 Jinsi: {data.get('gender')}\n💎 Status: {status}\n"
             f"👥 Takliflar: {len(data.get('referrals', []))}/{config['required_referrals']}{stats_text}")
@@ -194,9 +245,11 @@ def premium_page(message):
     uid = message.chat.id
     bot_user = bot.get_me().username
     link = f"https://t.me/{bot_user}?start={uid}"
-    text = (f"🎁 <b>Premium oling!</b>\n\n"
-            f"Premium afzalliklari:\n1. Sherik jinsini ko'rish 👫\n2. Qidiruvda navbatsiz ulanish ⚡\n\n"
-            f"Limit: <b>{config['required_referrals']} ta</b> do'st.\n🔗 Havola: {link}")
+    text = (f"🎁 <b>Premium afzalliklari:</b>\n\n"
+            f"1. Sherik jinsini ko'rish 👫\n"
+            f"2. Qidiruvda navbatsiz ulanish ⚡\n\n"
+            f"Limit: <b>{config['required_referrals']} ta</b> do'st taklif qiling.\n"
+            f"🔗 Taklif havolangiz:\n{link}")
     bot.send_message(uid, text, parse_mode="HTML", disable_web_page_preview=True)
 
 @bot.message_handler(func=lambda message: message.text == "❌ Suhbatni to'xtatish")
@@ -206,18 +259,21 @@ def stop(message):
         p_id = active_chats.pop(uid)
         if p_id in active_chats: active_chats.pop(p_id)
         bot.send_message(uid, "Suhbat to'xtatildi.", reply_markup=get_main_menu(uid))
-        bot.send_message(p_id, "Suhbatdosh tark etdi.", reply_markup=get_main_menu(p_id))
+        bot.send_message(p_id, "Suhbatdosh suhbatni to'xtatdi.", reply_markup=get_main_menu(p_id))
     elif uid in waiting_users:
         waiting_users.remove(uid)
-        bot.send_message(uid, "Bekor qilindi.")
+        bot.send_message(uid, "Qidiruv to'xtatildi.", reply_markup=get_main_menu(uid))
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
     uid = message.chat.id
     if uid in active_chats:
         try: bot.send_message(active_chats[uid], message.text)
-        except: bot.send_message(uid, "Xabar bormadi.")
+        except: bot.send_message(uid, "Xabar yuborib bo'lmadi.")
+    else:
+        bot.send_message(uid, "Tugmalardan foydalaning 👇", reply_markup=get_main_menu(uid))
 
 if __name__ == "__main__":
     keep_alive()
     bot.infinity_polling(none_stop=True)
+        
