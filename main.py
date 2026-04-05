@@ -1,6 +1,6 @@
 import telebot
 import os
-from telebot import types, api_helper
+from telebot import types, apihelper
 
 # --- SOZLAMALAR ---
 API_TOKEN = os.getenv('BOT_TOKEN')
