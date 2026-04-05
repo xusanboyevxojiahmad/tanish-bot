@@ -1,15 +1,33 @@
 import telebot
 import os
+import requests
+import time
 from telebot import types
 from flask import Flask
 from threading import Thread
+from apscheduler.schedulers.background import BackgroundScheduler
 
-# --- 1. RENDER UCHUN FLASK (Botni uyg'oq tutish) ---
+# --- 1. RENDER UCHUN FLASK VA UYG'OTUVCHI TIZIM ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot holati: Faol!"
+    return "Bot holati: Doimiy uyg'oq! ✅"
+
+def ping_self():
+    """Render serveri uyquga ketmasligi uchun o'z-o'ziga so'rov yuborish"""
+    try:
+        # DIQQAT: 'tanish-bot' o'rniga o'zingizning Render havolangizni yozing!
+        url = "https://tanish-bot.onrender.com" 
+        requests.get(url, timeout=10)
+        print("Ping: Bot serveri uyg'otildi.")
+    except Exception as e:
+        print(f"Ping xatosi: {e}")
+
+# Har 14 daqiqada uyg'otish taymerini yoqish
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=ping_self, trigger="interval", minutes=14)
+scheduler.start()
 
 def run():
     port = int(os.environ.get('PORT', 10000))
@@ -22,7 +40,7 @@ def keep_alive():
 
 # --- 2. SOZLAMALAR ---
 API_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = 8770983969  # Sizning ID raqamingiz
+ADMIN_ID = 8770983969 
 
 if not API_TOKEN:
     print("XATO: BOT_TOKEN topilmadi!")
@@ -30,18 +48,16 @@ if not API_TOKEN:
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# Dinamik sozlamalar lug'ati
 config = {
     'check_sub': True,
     'show_stats': True,
-    'channel_username': '@kanal_username', # Buni admin panelda o'zgartira olasiz
+    'channel_username': '@kanal_username',
     'required_referrals': 3
 }
 
-# Ma'lumotlar ombori (Vaqtinchalik)
 user_data = {} 
-waiting_users = [] # [user_id, user_id, ...]
-active_chats = {}  # {user_id: partner_id}
+waiting_users = []
+active_chats = {}
 
 # --- 3. YORDAMCHI FUNKSIYALAR ---
 def get_main_menu(user_id):
@@ -59,7 +75,7 @@ def check_sub(user_id):
         return status != 'left'
     except: return True
 
-# --- 4. ADMIN PANEL VA SOZLAMALAR ---
+# --- 4. ADMIN PANEL ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Menyu" and message.from_user.id == ADMIN_ID)
 def admin_panel(message):
     sub_status = "✅ YOQIQ" if config['check_sub'] else "❌ O'CHIQ"
@@ -68,10 +84,8 @@ def admin_panel(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(f"Obuna: {sub_status}", callback_data="toggle_sub"),
                types.InlineKeyboardButton(f"Statistika: {stats_status}", callback_data="toggle_stats"))
-    
     markup.add(types.InlineKeyboardButton(f"📢 Kanal: {config['channel_username']}", callback_data="set_channel"))
     markup.add(types.InlineKeyboardButton(f"💎 Premium limiti: {config['required_referrals']}", callback_data="change_limit"))
-    
     markup.add(types.InlineKeyboardButton("🚀 Reklama yuborish", callback_data="broadcast"))
     markup.add(types.InlineKeyboardButton("🔑 Egalikni o'tkazish", callback_data="transfer"))
     
@@ -83,8 +97,6 @@ def admin_panel(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.message.chat.id
-    
-    # --- ADMIN CALLBACKS ---
     if user_id == ADMIN_ID:
         if call.data == "toggle_sub":
             config['check_sub'] = not config['check_sub']
@@ -98,58 +110,38 @@ def callback_handler(call):
             msg = bot.send_message(user_id, "Yangi kanal @username yuboring:")
             bot.register_next_step_handler(msg, update_channel)
         elif call.data == "change_limit":
-            msg = bot.send_message(user_id, "Yangi limitni (raqam) yuboring:")
+            msg = bot.send_message(user_id, "Yangi limitni yuboring:")
             bot.register_next_step_handler(msg, update_limit)
         elif call.data == "broadcast":
             msg = bot.send_message(user_id, "Reklama xabarini yozing:")
             bot.register_next_step_handler(msg, send_broadcast)
-        elif call.data == "transfer":
-            msg = bot.send_message(user_id, "Yangi admin ID yuboring:")
-            bot.register_next_step_handler(msg, process_transfer)
 
-    # --- JINS TANLASH ---
     if call.data.startswith("set_"):
         gender = "Erkak" if call.data == "set_male" else "Ayol"
         user_data[user_id]['gender'] = gender
-        bot.edit_message_text(f"Sizning jinsingiz: {gender} ✅", chat_id=user_id, message_id=call.message.message_id)
-        bot.send_message(user_id, "Tayyor! Endi suhbatdosh qidirishingiz mumkin.", reply_markup=get_main_menu(user_id))
+        bot.edit_message_text(f"Jinsingiz: {gender} ✅", chat_id=user_id, message_id=call.message.message_id)
+        bot.send_message(user_id, "Tayyor!", reply_markup=get_main_menu(user_id))
 
-    # --- QIDIRUV REJIMI TANLASH ---
     elif call.data.startswith("find_"):
-        if user_id in active_chats: return
-        mode = call.data.split("_")[1] # female, male, random
+        mode = call.data.split("_")[1]
         search_partner(user_id, mode, call.message.message_id)
 
 # --- 5. ADMIN STEP HANDLERLARI ---
 def update_channel(message):
     if message.text.startswith("@"):
         config['channel_username'] = message.text.strip()
-        bot.send_message(ADMIN_ID, f"✅ Kanal o'zgartirildi: {config['channel_username']}")
-    else: bot.send_message(ADMIN_ID, "❌ Xato. @username ko'rinishida yozing.")
     admin_panel(message)
 
 def update_limit(message):
-    try:
-        config['required_referrals'] = int(message.text)
-        bot.send_message(ADMIN_ID, f"✅ Yangi limit: {message.text}")
-    except: bot.send_message(ADMIN_ID, "❌ Faqat raqam kiriting.")
+    try: config['required_referrals'] = int(message.text)
+    except: pass
     admin_panel(message)
 
 def send_broadcast(message):
-    count = 0
     for uid in user_data:
-        try:
-            bot.send_message(uid, message.text)
-            count += 1
+        try: bot.send_message(uid, message.text)
         except: continue
-    bot.send_message(ADMIN_ID, f"📢 {count} kishiga yuborildi.")
-
-def process_transfer(message):
-    global ADMIN_ID
-    try:
-        ADMIN_ID = int(message.text)
-        bot.send_message(message.chat.id, f"✅ Egalik {ADMIN_ID} ga o'tkazildi.")
-    except: bot.send_message(message.chat.id, "❌ Xato ID.")
+    bot.send_message(ADMIN_ID, "📢 Reklama yuborildi.")
 
 # --- 6. ASOSIY LOGIKA ---
 @bot.message_handler(commands=['start'])
@@ -157,7 +149,6 @@ def start(message):
     user_id = message.chat.id
     if user_id not in user_data:
         user_data[user_id] = {'gender': None, 'referrals': [], 'is_premium': False}
-        # Referal tekshirish
         args = message.text.split()
         if len(args) > 1:
             try:
@@ -186,94 +177,57 @@ def start(message):
 
 @bot.message_handler(func=lambda message: message.text == "🔍 Suhbatdosh topish")
 def find_menu(message):
-    user_id = message.chat.id
-    if user_id in active_chats:
-        bot.send_message(user_id, "Siz allaqachon suhbatdasiz!")
-        return
-    
+    uid = message.chat.id
+    if uid in active_chats: return
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Ayol 👩", callback_data="find_female"),
                types.InlineKeyboardButton("Erkak 👨", callback_data="find_male"))
     markup.add(types.InlineKeyboardButton("Tasodifiy 🎲", callback_data="find_random"))
-    bot.send_message(user_id, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
+    bot.send_message(uid, "Kim bilan suhbatlashmoqchisiz?", reply_markup=markup)
 
 def search_partner(user_id, mode, msg_id):
     if user_id in waiting_users: return
-
     found = False
     for partner_id in waiting_users:
         p_gender = user_data[partner_id]['gender']
-        
-        # Tanlovga moslikni tekshirish
-        match = False
-        if mode == "random": match = True
-        elif mode == "female" and p_gender == "Ayol": match = True
-        elif mode == "male" and p_gender == "Erkak": match = True
+        match = (mode == "random") or (mode == "female" and p_gender == "Ayol") or (mode == "male" and p_gender == "Erkak")
         
         if match:
             waiting_users.remove(partner_id)
             active_chats[user_id], active_chats[partner_id] = partner_id, user_id
-            
-            # Premium maxfiylik: Jinsni faqat premium ko'radi
             u_p_gen = user_data[partner_id]['gender'] if user_data[user_id]['is_premium'] else '🔒 Faqat Premium uchun'
             p_u_gen = user_data[user_id]['gender'] if user_data[partner_id]['is_premium'] else '🔒 Faqat Premium uchun'
-            
             bot.edit_message_text("🔍 Suhbatdosh topildi!", chat_id=user_id, message_id=msg_id)
-            bot.send_message(user_id, f"Suhbatni boshlashingiz mumkin.\n👫 Sherik jinsi: {u_p_gen}")
-            bot.send_message(partner_id, f"🔍 Suhbatdosh topildi!\n👫 Sherik jinsi: {p_u_gen}")
-            found = True
-            break
-            
+            bot.send_message(user_id, f"Sherik jinsi: {u_p_gen}"); bot.send_message(partner_id, f"Sherik jinsi: {p_u_gen}")
+            found = True; break
     if not found:
         waiting_users.append(user_id)
-        bot.edit_message_text("🔍 Suhbatdosh qidirilmoqda... kuting.", chat_id=user_id, message_id=msg_id)
-
-@bot.message_handler(func=lambda message: message.text == "👤 Profilim")
-def profile(message):
-    uid = message.chat.id
-    data = user_data.get(uid, {})
-    stats_text = f"\n📊 Bot a'zolari: {len(user_data)}" if config['show_stats'] else ""
-    status = "Premium ✨" if data.get('is_premium') else "Oddiy"
-    
-    text = (f"👤 <b>Profilingiz:</b>\n\n🆔 ID: <code>{uid}</code>\n"
-            f"👫 Jinsi: {data.get('gender')}\n💎 Status: {status}\n"
-            f"👥 Takliflar: {len(data.get('referrals', []))}/{config['required_referrals']}{stats_text}")
-    bot.send_message(uid, text, parse_mode="HTML")
-
-@bot.message_handler(func=lambda message: message.text == "🎁 Premium & Takliflar")
-def premium_page(message):
-    uid = message.chat.id
-    bot_user = bot.get_me().username
-    link = f"https://t.me/{bot_user}?start={uid}"
-    text = (f"🎁 <b>Premium afzalliklari:</b>\n\n"
-            f"1. Sherik jinsini ko'rish 👫\n"
-            f"2. Qidiruvda navbatsiz ulanish ⚡\n\n"
-            f"Limit: <b>{config['required_referrals']} ta</b> do'st taklif qiling.\n"
-            f"🔗 Taklif havolangiz:\n{link}")
-    bot.send_message(uid, text, parse_mode="HTML", disable_web_page_preview=True)
+        bot.edit_message_text("🔍 Suhbatdosh qidirilmoqda...", chat_id=user_id, message_id=msg_id)
 
 @bot.message_handler(func=lambda message: message.text == "❌ Suhbatni to'xtatish")
 def stop(message):
     uid = message.chat.id
     if uid in active_chats:
-        p_id = active_chats.pop(uid)
-        if p_id in active_chats: active_chats.pop(p_id)
-        bot.send_message(uid, "Suhbat to'xtatildi.", reply_markup=get_main_menu(uid))
-        bot.send_message(p_id, "Suhbatdosh suhbatni to'xtatdi.", reply_markup=get_main_menu(p_id))
+        p_id = active_chats.pop(uid); active_chats.pop(p_id)
+        bot.send_message(uid, "To'xtatildi.", reply_markup=get_main_menu(uid))
+        bot.send_message(p_id, "Sherik chiqib ketdi.", reply_markup=get_main_menu(p_id))
     elif uid in waiting_users:
-        waiting_users.remove(uid)
-        bot.send_message(uid, "Qidiruv to'xtatildi.", reply_markup=get_main_menu(uid))
+        waiting_users.remove(uid); bot.send_message(uid, "Qidiruv to'xtatildi.")
 
 @bot.message_handler(func=lambda message: True)
 def echo(message):
     uid = message.chat.id
     if uid in active_chats:
         try: bot.send_message(active_chats[uid], message.text)
-        except: bot.send_message(uid, "Xabar yuborib bo'lmadi.")
-    else:
-        bot.send_message(uid, "Tugmalardan foydalaning 👇", reply_markup=get_main_menu(uid))
+        except: bot.send_message(uid, "Xabar yuborilmadi.")
 
+# --- 7. BOTNI MUSTAHKAM ISHGA TUSHIRISH ---
 if __name__ == "__main__":
     keep_alive()
-    bot.infinity_polling(none_stop=True)
-        
+    print("Bot 24/7 rejimda ishga tushdi...")
+    while True:
+        try:
+            bot.infinity_polling(none_stop=True, timeout=60, long_polling_timeout=5)
+        except Exception as e:
+            print(f"Xato yuz berdi: {e}")
+            time.sleep(5)
