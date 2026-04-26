@@ -1,5 +1,2 @@
-pyTelegramBotAPI
-flask
-requests
-apscheduler
-
+aiogram
+yt-dlp
