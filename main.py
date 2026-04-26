@@ -1,205 +1,153 @@
-botimport os
-import time
-import requests
-from flask import Flask
-from threading import Thread
-from apscheduler.schedulers.background import BackgroundScheduler
-import telebot
-from telebot import types
+import os
+import asyncio
+import sqlite3
+import logging
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+import yt_dlp
 
-# -------------------- 1. SERVER & KEEP ALIVE --------------------
-app = Flask('')
-@app.route('/')
-def home(): return "Bot Builder Active ✅"
+# --- SOZLAMALAR ---
+TOKEN = "BOT_TOKENINGIZ" # @BotFather dan olingan token
+# Siz bergan ID raqami asosiy admin sifatida
+SUPER_ADMIN = 8329231121 
 
-def ping_self():
-    try:
-        url = os.environ.get("SELF_URL", "https://tanish-bot.onrender.com")
-        requests.get(url, timeout=5)
-    except: pass
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=ping_self, trigger="interval", seconds=20)
-scheduler.start()
+# --- MA'LUMOTLAR BAZASI ---
+db = sqlite3.connect("bot_data.db")
+cursor = db.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
+cursor.execute("CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT, url TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
 
-def run():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+# Adminni bazaga yozish
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_id', ?)", (str(SUPER_ADMIN),))
+db.commit()
 
-# -------------------- 2. SUB-BOT LOGIKASI --------------------
-def start_sub_bot(token):
-    try:
-        s_bot = telebot.TeleBot(token)
-        # Nusxa bot kodi (bu yerda faqat suhbat funksiyalari bo'ladi)
-        s_bot.infinity_polling(non_stop=True)
-    except: pass
+# --- YORDAMCHI FUNKSIYALAR ---
+def get_current_admin():
+    cursor.execute("SELECT value FROM settings WHERE key='admin_id'")
+    res = cursor.fetchone()
+    return int(res[0]) if res else SUPER_ADMIN
 
-# -------------------- 3. ASOSIY BOT SOZLAMALARI --------------------
-API_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', 8770983969))
-bot = telebot.TeleBot(API_TOKEN)
+def get_channels():
+    cursor.execute("SELECT id, name, url FROM channels")
+    return cursor.fetchall()
 
-user_data = {} # {id: {'gender': None, 'referrals': [], 'is_premium': False}}
-waiting_users = []
-active_chats = {}
-KARTA_RAQAM = "8600000000000000" # O'z kartangizni yozing
+def download_video(url):
+    ydl_opts = {
+        'format': 'best',
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
 
-def get_main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("🔍 Suhbatdosh topish", "❌ To'xtatish")
-    markup.add("👤 Profilim")
-    return markup
+# --- ADMIN PANEL KLAVIATURASI ---
+def admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Kanal qo'shish", callback_data="add_channel")],
+        [InlineKeyboardButton(text="❌ Kanalni o'chirish", callback_data="del_channel")],
+        [InlineKeyboardButton(text="👤 Adminni o'zgartirish", callback_data="transfer_admin")],
+        [InlineKeyboardButton(text="📊 Statistika", callback_data="stats")],
+        [InlineKeyboardButton(text="✉️ Reklama yuborish", callback_data="broadcast")]
+    ])
 
-# -------------------- 4. START VA RO'YXATDAN O'TISH --------------------
-@bot.message_handler(commands=['start'])
-def start(message):
-    uid = message.chat.id
-    if uid not in user_data:
-        user_data[uid] = {'gender': None, 'referrals': [], 'is_premium': False}
-        # Referral tizimi (1 ta do'st)
-        args = message.text.split()
-        if len(args) > 1 and args[1].isdigit():
-            inviter = int(args[1])
-            if inviter in user_data and uid not in user_data[inviter]['referrals'] and inviter != uid:
-                user_data[inviter]['referrals'].append(uid)
-                user_data[inviter]['is_premium'] = True
-                bot.send_message(inviter, "🌟 Tabriklaymiz! Do'stingiz qo'shildi, sizga PREMIUM berildi!")
+# --- ADMIN TEKSHIRUVI ---
+def is_admin(user_id):
+    return user_id == SUPER_ADMIN or user_id == get_current_admin()
 
-    if user_data[uid]['gender'] is None:
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("Erkak 👨", callback_data="set_male"),
-               types.InlineKeyboardButton("Ayol 👩", callback_data="set_female"))
-        bot.send_message(uid, "Jinsingizni tanlang:", reply_markup=kb)
-    else:
-        bot.send_message(uid, "Asosiy menyu:", reply_markup=get_main_menu())
+# --- ADMIN KOMANDALARI ---
+@dp.message(Command("admin"))
+async def open_admin(message: types.Message):
+    if is_admin(message.from_user.id):
+        await message.answer("🛠 **Boshqaruv paneli**\nSiz tizimda to'liq huquqqa egasiz.", reply_markup=admin_keyboard())
 
-@bot.callback_query_handler(func=lambda call: call.data in ["set_male", "set_female"])
-def save_gender(call):
-    uid = call.message.chat.id
-    user_data[uid]['gender'] = "Erkak" if call.data == "set_male" else "Ayol"
-    bot.delete_message(uid, call.message.message_id)
-    bot.send_message(uid, f"Profil saqlandi. /bot_yaratish buyrug'i orqali o'z botingizni ochishingiz mumkin.", reply_markup=get_main_menu())
+@dp.callback_query(F.data == "stats")
+async def show_stats(call: types.CallbackQuery):
+    if is_admin(call.from_user.id):
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+        await call.message.edit_text(f"📊 **Statistika**\n\nJami foydalanuvchilar: {count} ta", reply_markup=admin_keyboard())
 
-# -------------------- 5. QIDIRUV LOGIKASI (PREMIUM VA ODDIY) --------------------
-@bot.message_handler(func=lambda m: m.text == "🔍 Suhbatdosh topish")
-def find_menu(message):
-    uid = message.chat.id
-    if uid in active_chats: return
+# Kanal qo'shish jarayoni
+@dp.callback_query(F.data == "add_channel")
+async def add_ch_prompt(call: types.CallbackQuery):
+    if is_admin(call.from_user.id):
+        await call.message.answer("Kanalni quyidagi formatda yuboring:\n`ID | Nomi | Link` \n\nMisol:\n`-10021345678 | Primetime | https://t.me/p_time` ")
+
+@dp.message(lambda msg: "|" in msg.text)
+async def process_add_channel(message: types.Message):
+    if is_admin(message.from_user.id):
+        try:
+            parts = message.text.split("|")
+            ch_id, name, url = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            cursor.execute("INSERT INTO channels VALUES (?, ?, ?)", (ch_id, name, url))
+            db.commit()
+            await message.answer("✅ Yangi kanal majburiy obunaga qo'shildi!")
+        except Exception as e:
+            await message.answer(f"❌ Xatolik yuz berdi: {e}")
+
+# Adminni o'zgartirish
+@dp.callback_query(F.data == "transfer_admin")
+async def transfer_prompt(call: types.CallbackQuery):
+    if is_admin(call.from_user.id):
+        await call.message.answer("Yangi adminning **ID raqamini** yuboring:")
+
+@dp.message(lambda msg: msg.text.isdigit())
+async def process_transfer(message: types.Message):
+    if is_admin(message.from_user.id):
+        new_admin = message.text
+        cursor.execute("UPDATE settings SET value = ? WHERE key = 'admin_id'", (new_admin,))
+        db.commit()
+        await message.answer(f"✅ Qo'shimcha admin tayinlandi: {new_admin}")
+
+# --- ASOSIY ISHCHI QISM ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    cursor.execute("INSERT OR IGNORE INTO users VALUES (?)", (message.from_user.id,))
+    db.commit()
+    await message.answer("👋 Salom! Men orqali ijtimoiy tarmoqlardan video yuklashingiz mumkin.\n\nLink yuboring:")
+
+@dp.message(F.text.contains("http"))
+async def handle_dl(message: types.Message):
+    user_id = message.from_user.id
+    channels = get_channels()
     
-    is_premium = user_data[uid].get('is_premium') or uid == ADMIN_ID
-    markup = types.InlineKeyboardMarkup()
+    # Majburiy obunani tekshirish
+    not_sub = []
+    for ch_id, ch_name, ch_url in channels:
+        try:
+            member = await bot.get_chat_member(ch_id, user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                not_sub.append([InlineKeyboardButton(text=ch_name, url=ch_url)])
+        except:
+            continue # Bot kanalda admin bo'lmasa yoki xato bo'lsa o'tkazib yuboradi
     
-    # Premium tugmalar
-    text_f = "Ayol 👩" if is_premium else "Ayol 👩 (🔒 Premium)"
-    text_m = "Erkak 👨" if is_premium else "Erkak 👨 (🔒 Premium)"
-    
-    markup.add(types.InlineKeyboardButton(text_f, callback_data="find_female"),
-               types.InlineKeyboardButton(text_m, callback_data="find_male"))
-    # Hamma uchun tugma
-    markup.add(types.InlineKeyboardButton("Tasodifiy 🎲 (Jinsi berkitilgan)", callback_data="find_random"))
-    bot.send_message(uid, "Qidiruv turini tanlang:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("find_"))
-def handle_finding(call):
-    uid = call.message.chat.id
-    mode = call.data.split("_")[1]
-    is_p = user_data[uid].get('is_premium') or uid == ADMIN_ID
-
-    if mode in ["female", "male"] and not is_p:
-        bot.answer_callback_query(call.id, "❌ Jinsni tanlab qidirish faqat Premiumlar uchun!", show_alert=True)
+    if not_sub:
+        kb = InlineKeyboardMarkup(inline_keyboard=not_sub)
+        await message.answer("❌ Botdan foydalanish uchun quyidagi kanallarga a'zo bo'lishingiz shart:", reply_markup=kb)
         return
 
-    bot.answer_callback_query(call.id)
-    search_partner(uid, mode, call.message.message_id)
-
-def search_partner(uid, mode, msg_id):
-    if uid in waiting_users: return
-    found = False
-    for p_id in waiting_users:
-        if p_id == uid: continue
-        p_gen = user_data[p_id].get('gender')
-        
-        # Qidiruv sharti
-        match = (mode == "random") or \
-                (mode == "female" and p_gen == "Ayol") or \
-                (mode == "male" and p_gen == "Erkak")
-        
-        if match:
-            waiting_users.remove(p_id)
-            active_chats[uid], active_chats[p_id] = p_id, uid
-            
-            # Tasodifiy bo'lsa jinsini aytmaymiz
-            gender_info = f"Sherik jinsi: {p_gen}" if mode != "random" else "Sherik jinsi: 🔒 Berkitilgan"
-            
-            bot.edit_message_text(f"🔍 Suhbatdosh topildi!\n{gender_info}", uid, msg_id)
-            bot.send_message(p_id, "🔍 Suhbatdosh topildi! Salom deb yozing...")
-            found = True; break
-            
-    if not found:
-        waiting_users.append(uid)
-        bot.edit_message_text("⏳ Suhbatdosh qidirilmoqda...", uid, msg_id)
-
-# -------------------- 6. BOT YARATISH (FAQAT KOMANDA) --------------------
-@bot.message_handler(commands=['bot_yaratish'])
-def create_bot_cmd(message):
-    uid = message.chat.id
-    user = user_data.get(uid, {})
-    
-    if user.get('is_premium') or uid == ADMIN_ID:
-        msg = bot.send_message(uid, "🤖 Token yuboring (@BotFather dan olingan):")
-        bot.register_next_step_handler(msg, process_new_bot)
-    else:
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💳 15,000 so'm to'lash", callback_data="buy_premium"))
-        ref_link = f"https://t.me/{(bot.get_me()).username}?start={uid}"
-        bot.send_message(uid, f"❌ Bot yaratish uchun Premium kerak!\n\n1. To'lov qiling (15k)\n2. Yoki 1 ta do'st taklif qiling.\n\nLink: {ref_link}", reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda call: call.data == "buy_premium")
-def buy_p(call):
-    text = f"💰 To'lov: 15,000 so'm\n💳 Karta: `{KARTA_RAQAM}`\n\nChekni adminga yuboring."
-    bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-    bot.send_message(ADMIN_ID, f"🔔 To'lov kutilmoqda: {call.from_user.id}\nRuxsat berish: /give_{call.message.chat.id}")
-
-def process_new_bot(message):
-    token = message.text.strip()
-    if ":" in token:
-        Thread(target=start_sub_bot, args=(token,), daemon=True).start()
-        bot.send_message(message.chat.id, "✅ Botingiz muvaffaqiyatli yoqildi!")
-    else:
-        bot.send_message(message.chat.id, "❌ Xato token.")
-
-# -------------------- 7. ADMIN VA PROFIL --------------------
-@bot.message_handler(func=lambda m: m.text.startswith("/give_") and m.from_user.id == ADMIN_ID)
-def admin_give(message):
+    wait = await message.answer("Xabaringiz qayta ishlanmoqda... 📥")
     try:
-        tid = int(message.text.split("_")[1])
-        user_data[tid]['is_premium'] = True
-        bot.send_message(tid, "💎 To'lov tasdiqlandi! Endi /bot_yaratish mumkin.")
-        bot.send_message(ADMIN_ID, "Tayyor.")
-    except: pass
+        # Videoni yuklab olish
+        file_path = await asyncio.to_thread(download_video, message.text)
+        await message.answer_video(video=FSInputFile(file_path), caption="✅ Yuklab berildi!")
+        os.remove(file_path)
+        await wait.delete()
+    except:
+        await wait.edit_text("❌ Xatolik! Video topilmadi yoki bu sayt qo'llab-quvvatlanmaydi.")
 
-@bot.message_handler(func=lambda m: m.text == "👤 Profilim")
-def my_profile(message):
-    u = user_data[message.chat.id]
-    status = "💎 Premium" if u['is_premium'] else "📝 Oddiy"
-    bot.send_message(message.chat.id, f"ID: {message.chat.id}\nStatus: {status}\nTakliflar: {len(u['referrals'])}/1")
+async def main():
+    if not os.path.exists('downloads'): os.makedirs('downloads')
+    await dp.start_polling(bot)
 
-@bot.message_handler(func=lambda m: m.text == "❌ To'xtatish")
-def stop_chat(message):
-    uid = message.chat.id
-    if uid in active_chats:
-        p_id = active_chats.pop(uid); active_chats.pop(p_id)
-        bot.send_message(uid, "Suhbat yakunlandi."); bot.send_message(p_id, "Sherik chiqib ketdi.")
-    elif uid in waiting_users:
-        waiting_users.remove(uid); bot.send_message(uid, "Qidiruv to'xtatildi.")
-
-@bot.message_handler(func=lambda m: True)
-def chat_relay(m):
-    if m.chat.id in active_chats:
-        try: bot.send_message(active_chats[m.chat.id], m.text)
-        except: pass
-
-# -------------------- RUN --------------------
 if __name__ == "__main__":
-    Thread(target=run, daemon=True).start()
-    bot.infinity_polling()
+    asyncio.run(main())
+            
